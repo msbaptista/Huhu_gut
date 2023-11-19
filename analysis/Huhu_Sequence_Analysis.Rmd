@@ -1,0 +1,500 @@
+---
+title: "Huhu_analysis"
+author: "Mafalda S. Baptista"
+date: "2023-10-27"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center", fig.width = 10, fig.height = 6)
+```
+
+
+```{r Libraries and seed}
+
+# Libraries
+library("tidyverse")       # data wrangling and visualisation
+
+library("knitr")           # markdown output control
+
+library("phyloseq")        # analysis of microbial communities
+
+library("vegan")           # multivariate analysis
+
+library("patchwork")       # plots together
+
+library("plotly")          # Interactive plots
+
+library("here")            # set the path to the folder 
+
+set.seed(57)
+```
+
+### BACTERIA
+```{r Load the data}
+
+# Load the data
+
+huhu_bac <- readRDS("huhu_bac.rds")
+huhu_bac
+```
+
+
+```{r Get metadata}
+
+# Load the metadata
+metadata_bac <-  read.csv("Huhu_bac_metadata.csv", row.names = 1, header = TRUE, stringsAsFactors = TRUE)
+
+# Create a phyloseq object
+huhu_bac <- phyloseq(otu_table(huhu_bac), 
+                          tax_table(huhu_bac),
+                          sample_data(metadata_bac))
+huhu_bac
+```
+
+
+```{r Rename ASVs}
+
+# Inspect the ASV data - it should be a sequence
+otu_table(huhu_bac)[1:10, 1:10]
+
+
+# We want to name the ASV to something shorter, but before lets store the seqs in phyloseq too
+
+dna <- Biostrings::DNAStringSet(taxa_names(huhu_bac))
+names(dna) <- taxa_names(huhu_bac)
+huhu_bac <- merge_phyloseq(huhu_bac, dna)
+taxa_names(huhu_bac) <- paste0("ASV_", seq(ntaxa(huhu_bac)))
+
+# Re-inspect the data - it should be ASV_Number
+otu_table(huhu_bac)[1:10, 1:10]
+
+# And re-inspect the phyloseq - now the seqs are present
+huhu_bac
+```
+
+
+#### Filtering by taxonomy
+```{r Filter by taxonomy}
+
+# Show available ranks in the dataset
+rank_names(huhu_bac)
+
+# How many domains? (Kingdom in the taxonomy table)
+table(tax_table(huhu_bac)[, "Kingdom"], exclude = NULL) 
+
+# How many Phyla?
+table(tax_table(huhu_bac)[, "Phylum"], exclude = NULL) 
+
+# Remove known erroneous assignments
+huhu_bac_f <- subset_taxa (huhu_bac, (Order !="Chloroplast") | is.na(Order)) # (=559 ASVs)
+huhu_bac_f <- subset_taxa (huhu_bac_f, (Family != "Mitochondria") | is.na(Family)) # (=469 ASVs)
+huhu_bac_f
+
+# Inspect Phyla by abundance
+
+# Compute prevalence of each ASV
+prevdf <- apply(X = otu_table(huhu_bac_f),
+               MARGIN = ifelse(taxa_are_rows(huhu_bac_f), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Add taxonomy and total read counts to this
+prevdf <- data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(huhu_bac_f),
+                    tax_table(huhu_bac_f))
+
+# Plot prevalence
+ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(huhu_bac_f), color = Phylum)) + 
+  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +
+  xlab("Total Abundance") + 
+  ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+```
+
+Two Archaea. We will filter based on low abundance, and not on taxonomy.
+
+### Sequences and ASVs data
+
+```{r ASVs}
+
+# Inspect number of reads by ASVs
+
+colSums.asv.df <- data.frame(colSums(otu_table(huhu_bac_f))) %>%
+  rownames_to_column("ASV")
+
+ggplot(colSums.asv.df, aes(x = reorder(ASV, -colSums.otu_table.huhu_bac_f..), y = colSums.otu_table.huhu_bac_f..)) + 
+  geom_bar(stat = "identity") +
+  ylab("ASVs") +
+  xlab("") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+colSums.asv.df %>% summarise(
+    max = max(colSums.otu_table.huhu_bac_f..),
+    median = median(colSums.otu_table.huhu_bac_f..),
+    min = min(colSums.otu_table.huhu_bac_f..) 
+    ) %>% 
+      kable()
+```
+The number of ASVs reads varied between 2 (as expected) and 41112 for ASV_1. 
+
+
+```{r Reads}
+# Inspect number of reads by sample
+
+rowSums.asv.df <- merge(data.frame(rowSums(otu_table(huhu_bac_f))), data.frame(sample_data(huhu_bac_f)), by = "row.names", all.x=TRUE) 
+
+ggplot(rowSums.asv.df, aes(x = reorder(Row.names, -rowSums.otu_table.huhu_bac_f..), y =
+               rowSums.otu_table.huhu_bac_f..)) +
+  geom_col() + 
+  coord_flip() +
+  ylab("Reads") +
+  xlab("")
+
+rowSums.asv.df %>% summarise(
+    max = max(rowSums.otu_table.huhu_bac_f..),
+    median = median(rowSums.otu_table.huhu_bac_f..),
+    min = min(rowSums.otu_table.huhu_bac_f..) 
+    ) %>% 
+      kable()
+
+```
+
+The number of reads in each Sample varied between 6974 and 33893, with a median value of 23255. If we remove samples with less than 10000 reads we would loose 20P_Bac, which clearly has less reads that all the others. But we will keep it until we check the rarefaction curves
+
+
+```{r IonTorrent Runs}
+
+ggplot(rowSums.asv.df, aes(x = reorder(Row.names, -rowSums.otu_table.huhu_bac_f..), y =
+               rowSums.otu_table.huhu_bac_f..)) +
+  geom_col(aes (fill = PlateNr)) + 
+  coord_flip() +
+  ylab("Reads") +
+  xlab("")
+
+``` 
+
+We don't see any obvious difference between runs
+
+
+```{r Interactive plot}
+
+rowSums.asv.df <- rowSums.asv.df %>%
+  arrange(desc(rowSums.otu_table.huhu_bac_f..))
+
+rowSums.asv.df$Row.names
+
+yform <- list(categoryorder ="array",
+              categoryarray = c("TAP_Bac", "38P_Bac", "42P_Bac", "37P_Bac", "24P_Bac", "01C_Bac", "37C_Bac", "41P_Bac", "06P_Bac", "41C_Bac",
+                                "01P_Bac", "20C_Bac", "42C_Bac", "06C_Bac", "24C_Bac", "38C_Bac", "TAC_Bac", "20P_Bac"))
+
+plot_ly(rowSums.asv.df, x= ~rowSums.otu_table.huhu_bac_f.., y = ~Samples, 
+        type = "bar", 
+        color = ~PlateNr,
+        text = ~rowSums.otu_table.huhu_bac_f..) %>%
+  layout(yaxis = yform)
+
+```
+
+
+```{r Rarefaction}
+
+# Plot rarefaction curves for each sample
+# rarecurve(otu_table(huhu_bac_f), step = 100, 10000, lwd=2, ylab="ASVs")
+
+# It is not working anymore, and it seems to be an issue w/ updating phyloseq
+# https://stackoverflow.com/questions/74530039/error-vegan-rarecurve-error-in-asx-matrixi-j-drop-false-subscript
+
+m_huhu_bac_f <- otu_table(huhu_bac_f)
+class(m_huhu_bac_f) <- "matrix"
+
+rarecurve(m_huhu_bac_f, step = 100, sample = 10000, lwd = 2, ylab = "ASVs")
+
+```
+
+Looks like 20P_Bac has reached a plateau. We will keep this sample. 
+
+
+```{r Save}
+
+# Save
+saveRDS(huhu_bac_f, "huhu_bac_phyloseq.rds")
+```
+
+Save the phyloseq object for further analysis
+
+
+**Revised paper**/
+For the paper we ended up removing TAC_Bac and TAP_Bac because these samples were collected in Hillcrest and were deemed not comparable to the other samples, collected in Claudelands.
+
+```{r Rarefaction revised}
+
+huhu_bac_f_rev <- subset_samples(huhu_bac_f, Samples != "TAC_Bac" & Samples != "TAP_Bac")
+
+# Plot rarefaction curves for each sample
+
+m_huhu_bac_f_rev <- otu_table(huhu_bac_f_rev)
+class(m_huhu_bac_f_rev) <- "matrix"
+
+raremax <- min(rowSums(m_huhu_bac_f_rev))
+rarecurve(m_huhu_bac_f_rev, step = 100, sample = raremax, lwd = 2, ylab = "ASVs", main = "A")
+
+
+rowSums.asv.df <- merge(data.frame(rowSums(otu_table(huhu_bac_f_rev))), data.frame(sample_data(huhu_bac_f_rev)), by = "row.names", all.x=TRUE) 
+
+ggplot(rowSums.asv.df, aes(x = reorder(Row.names, -rowSums.otu_table.huhu_bac_f_rev..), y =
+               rowSums.otu_table.huhu_bac_f_rev..)) +
+  geom_col() + 
+  coord_flip() +
+  ylab("Reads") +
+  xlab("") +
+  theme_bw()
+
+rowSums.asv.df %>% summarise(
+    max = max(rowSums.otu_table.huhu_bac_f_rev..),
+    median = median(rowSums.otu_table.huhu_bac_f_rev..),
+    min = min(rowSums.otu_table.huhu_bac_f_rev..) 
+    ) %>% 
+      kable()
+
+```
+
+
+### FUNGI
+```{r Load the data f}
+
+# Load the data
+
+huhu_f <- readRDS("huhu_f.rds")
+huhu_f
+```
+
+
+```{r Get metadata f}
+
+# Load the metadata
+metadata_f <-  read.csv("Huhu_f_metadata.csv", row.names = 1, header = TRUE, stringsAsFactors = TRUE)
+
+# Create a phyloseq object
+huhu_f <- phyloseq(otu_table(huhu_f), 
+                          tax_table(huhu_f),
+                          sample_data(metadata_f))
+huhu_f
+```
+
+
+```{r Rename ASVs f}
+
+# Inspect the ASV data - it should be a sequence
+otu_table(huhu_f)[1:10, 1:10]
+
+
+# We want to name the ASV to something shorter, but before lets store the seqs in phyloseq too
+
+dna <- Biostrings::DNAStringSet(taxa_names(huhu_f))
+names(dna) <- taxa_names(huhu_f)
+huhu_f <- merge_phyloseq(huhu_f, dna)
+taxa_names(huhu_f) <- paste0("ASV_", seq(ntaxa(huhu_f)))
+
+# Re-inspect the data - it should be ASV_Number
+otu_table(huhu_f)[1:10, 1:10]
+
+# And re-inspect the phyloseq - now the seqs are present
+huhu_f
+```
+
+
+#### Filtering by taxonomy
+```{r Filter by taxonomy f}
+
+# Show available ranks in the dataset
+rank_names(huhu_f)
+
+# How many domains? (Kingdom in the taxonomy table)
+table(tax_table(huhu_f)[, "Kingdom"], exclude = NULL) 
+
+# How many Phyla?
+table(tax_table(huhu_f)[, "Phylum"], exclude = NULL) 
+
+
+# Inspect Phyla tby abundance
+
+# Compute prevalence of each ASV
+prevdf <- apply(X = otu_table(huhu_f),
+               MARGIN = ifelse(taxa_are_rows(huhu_f), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+# Add taxonomy and total read counts to this
+prevdf <- data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(huhu_f),
+                    tax_table(huhu_f))
+
+# Plot prevalence
+ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(huhu_f), color = Phylum)) + 
+  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +
+  xlab("Total Abundance") + 
+  ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+```
+
+For now we will keep the NA Phyla
+
+### Sequences and ASVs data
+
+```{r ASVs f}
+
+# Inspect number of reads by ASVs
+
+colSums.asv.df <- data.frame(colSums(otu_table(huhu_f))) %>%
+  rownames_to_column("ASV")
+
+ggplot(colSums.asv.df, aes(x = reorder(ASV, -colSums.otu_table.huhu_f..), y = colSums.otu_table.huhu_f..)) + 
+  geom_bar(stat = "identity") +
+  ylab("ASVs") +
+  xlab("") +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+colSums.asv.df %>% summarise(
+    max = max(colSums.otu_table.huhu_f..),
+    median = median(colSums.otu_table.huhu_f..),
+    min = min(colSums.otu_table.huhu_f..) 
+    ) %>% 
+      kable()
+```
+The number of ASVs reads varied between 2 (as expected) and 37245 for ASV_1. 
+
+
+```{r Reads f}
+# Inspect number of reads by sample
+
+rowSums.asv.df <- merge(data.frame(rowSums(otu_table(huhu_f))), data.frame(sample_data(huhu_f)), by = "row.names", all.x=TRUE) 
+
+ggplot(rowSums.asv.df, aes(x = reorder(Row.names, -rowSums.otu_table.huhu_f..), y =
+               rowSums.otu_table.huhu_f..)) +
+  geom_col() + 
+  coord_flip() +
+  ylab("Reads") +
+  xlab("")
+
+rowSums.asv.df %>% summarise(
+    max = max(rowSums.otu_table.huhu_f..),
+    median = median(rowSums.otu_table.huhu_f..),
+    min = min(rowSums.otu_table.huhu_f..) 
+    ) %>% 
+      kable()
+
+```
+
+The number of reads in each Sample varied between 2105 and 33779, with a median value of 23255. We have a great discrepancy in the number of reads for sample 01C_F and 38C_F and all other samples.
+
+
+```{r IonTorrent Runs f}
+
+ggplot(rowSums.asv.df, aes(x = reorder(Row.names, -rowSums.otu_table.huhu_f..), y =
+               rowSums.otu_table.huhu_f..)) +
+  geom_col(aes (fill = PlateNr)) + 
+  coord_flip() +
+  ylab("Reads") +
+  xlab("")
+
+``` 
+
+We don't see any obvious difference between runs
+
+```{r Interactive plot f}
+
+rowSums.asv.df <- rowSums.asv.df %>%
+  arrange(desc(rowSums.otu_table.huhu_f..))
+
+rowSums.asv.df$Row.names
+
+yform <- list(categoryorder ="array",
+              categoryarray = c("01C_F", "38C_F", "24P_F", "38P_F", "37C_F", "41P_F", "20P_F", "42P_F", "01P_F", "TAC_F", "06C_F", "06P_F",
+                                "TAP_F", "37P_F", "42C_F", "41C_F", "24C_F", "20C_F"))
+
+plot_ly(rowSums.asv.df, x= ~rowSums.otu_table.huhu_f.., y = ~Samples, 
+        type = "bar", 
+        color = ~PlateNr,
+        text = ~rowSums.otu_table.huhu_f..) %>%
+  layout(yaxis = yform)
+
+```
+
+```{r Rarefaction f}
+
+# Plot rarefaction curves for each sample
+#rarecurve(otu_table(huhu_f), step = 100, 10000, lwd=2, ylab="ASVs")
+
+m_huhu_f <- otu_table(huhu_f)
+class(m_huhu_f) <- "matrix"
+
+rarecurve(m_huhu_f, step = 100, sample = 10000, lwd =2, ylab = "ASVs")
+
+```
+
+Looks like all the samples reached a plateau, so let's use this as a criteria. Sample TAC_F is not looking good, but we will remove it for the analysis. 
+
+```{r Save f}
+
+# Save
+saveRDS(huhu_f, "huhu_f_phyloseq.rds")
+```
+
+Save the phyloseq object for further analysis
+
+**Revised paper**/
+For the paper we ended up removing TAC_Bac and TAP_Bac because these samples were collected in Hillcrest and were deemed not comparable to the other samples, collected in Claudelands.
+
+```{r Rarefaction f revised}
+
+huhu_f_rev <- subset_samples(huhu_f, Samples != "TAC_F" & Samples != "TAP_F")
+
+# Plot rarefaction curves for each sample
+
+m_huhu_f_rev <- otu_table(huhu_f_rev)
+class(m_huhu_f_rev) <- "matrix"
+
+raremaxf <- min(rowSums(m_huhu_f_rev))
+rarecurve(m_huhu_f_rev, step = 100, sample = raremaxf, lwd = 2, ylab = "ASVs", main = "B")
+
+
+rowSums.asv.df <- merge(data.frame(rowSums(otu_table(huhu_f_rev))), data.frame(sample_data(huhu_f_rev)), by = "row.names", all.x=TRUE) 
+
+ggplot(rowSums.asv.df, aes(x = reorder(Row.names, -rowSums.otu_table.huhu_f_rev..), y =
+               rowSums.otu_table.huhu_f_rev..)) +
+  geom_col() + 
+  coord_flip() +
+  ylab("Reads") +
+  xlab("") +
+  theme_bw()
+
+rowSums.asv.df %>% summarise(
+    max = max(rowSums.otu_table.huhu_f_rev..),
+    median = median(rowSums.otu_table.huhu_f_rev..),
+    min = min(rowSums.otu_table.huhu_f_rev..) 
+    ) %>% 
+      kable()
+```
+
+Revised rarefaction plot for A) Bacteria and B) Fungi
+
+```{r Rarefaction total plot }
+
+
+par(mfrow = c(1,2))
+
+rarecurve(m_huhu_bac_f_rev, step = 100, sample = raremax, lwd = 2, ylab = "ASVs", main = "A", label = FALSE)
+
+rarecurve(m_huhu_f_rev, step = 100, sample = raremaxf, lwd = 2, ylab = "ASVs", main = "B", label = FALSE)
+
+```

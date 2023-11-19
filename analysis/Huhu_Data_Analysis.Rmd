@@ -1,0 +1,469 @@
+---
+title: "Huhu_Data_Analysis"
+author: "Mafalda S. Baptista"
+date: "2023-10-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center", fig.width = 10, fig.height = 6)
+```
+
+
+```{r Libraries and seed}
+
+# Libraries
+
+library("tidyverse")       # data wrangling and visualisation
+
+library("phyloseq")        # analysis of microbial communities
+
+library("microViz")        # visualization of microbiome sequencing data
+
+library("ggpubr")          # statistical tests in plots
+
+library("patchwork")       # plots together
+
+library("plotly")          # Interactive plots
+
+library("here")            # set the path to the folder 
+
+
+set.seed(57)
+```
+
+
+```{r Load data}
+
+huhu_bac <- readRDS("huhu_bac_phyloseq.rds")
+
+huhu_f <- readRDS("huhu_f_phyloseq.rds")
+
+# Remove samples from Hillcrest
+
+huhu_bac <- subset_samples(huhu_bac, Samples != "TAC_Bac" & Samples != "TAP_Bac")
+huhu_bac
+
+huhu_f <- subset_samples(huhu_f, Samples != "TAC_F" & Samples != "TAP_F")
+huhu_f
+```
+
+### FUNGI
+
+```{r Fungi Figures}
+
+# Barplots - individuals separated
+
+# Cotton samples
+cotton_samples_fungi <- c("38C_F", "38P_F", "37C_F", "37P_F",
+                          "06C_F", "06P_F", "01C_F", "01P_F")
+# Pine samples
+pine_samples_fungi <- c("42P_F", "42C_F", "41P_F", "41C_F",
+                          "24P_F", "24C_F", "20P_F", "20C_F")
+
+
+# Phylum level
+
+barplot_phyla_fungi_cotton <- huhu_f %>%
+  subset_samples(Samples %in% cotton_samples_fungi) %>%
+  tax_fix() %>% # tax_table values as unknown are replaced with the first known higher taxonomic rank
+  comp_barplot(tax_level = "Phylum", 
+               sample_order = "asis", 
+               bar_width = 0.9) +
+  coord_flip() +
+  facet_wrap("Diet", nrow = 1, scales = "free") +
+  labs(x = NULL, y = NULL,
+       title = "A",
+      fill = "Highest taxa") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+
+barplot_phyla_fungi_pine <- huhu_f %>%
+  subset_samples(Samples %in% pine_samples_fungi) %>%
+  tax_fix() %>% # tax_table values as unknown are replaced with the first known higher taxonomic rank
+  comp_barplot(tax_level = "Phylum", 
+               sample_order = "asis", 
+               bar_width = 0.9) +
+  coord_flip() +
+  facet_wrap("Diet", nrow = 1, scales = "free") +
+  labs(x = NULL, y = NULL,
+       title = "C",
+       fill = "Highest taxa") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+# Genus level
+
+pal_fungi <- huhu_f %>%
+  tax_fix() %>%
+  tax_palette(rank = "Genus", n = 30, pal = "brewerPlus")
+
+# tax_palette_plot(pal_fungi)
+
+barplot_genus_fungi_cotton <- huhu_f %>%
+  subset_samples(Samples %in% cotton_samples_fungi) %>%
+  tax_fix() %>%
+  comp_barplot(tax_level = "Genus",
+               n_taxa = 12,
+               merge_other = FALSE,
+               sample_order = "asis",
+               bar_width = 0.9,
+               palette = pal_fungi) +
+  coord_flip() +
+  facet_wrap("Diet", nrow = 1, scales = "free") +
+  labs(x = NULL, y = NULL, 
+       title = "B",
+       fill = "Lowest taxa") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+
+barplot_genus_fungi_pine <- huhu_f %>%
+  subset_samples(Samples %in% pine_samples_fungi) %>%
+  tax_fix() %>%
+  comp_barplot(tax_level = "Genus",
+               n_taxa = 12,
+               merge_other = FALSE,
+               sample_order = "asis",
+               bar_width = 0.9,
+               palette = pal_fungi) +
+  coord_flip() +
+  facet_wrap("Diet", nrow = 1, scales = "free") +
+  labs(x = NULL, y = NULL, 
+       title = "D",
+       fill = "Lowest taxa") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+# Plot
+(barplot_phyla_fungi_cotton + barplot_genus_fungi_cotton) / (barplot_phyla_fungi_pine  + barplot_genus_fungi_pine)
+
+# ggsave("Fungi_barplots.png", dpi = 300, width = 15, height = 8)
+
+
+# Plot
+pca_fungi <- huhu_f %>%
+  tax_transform("clr") %>% # Transform the microbial data with the centre log ratio transformation
+  ord_calc() %>%           # Perform PCA with the clr-transformed (equivalent to aitchison distance)
+  ord_plot(colour = "Diet", size = 5, alpha = 0.75, auto_caption = 0) +
+  scale_colour_brewer(palette = "Set2") +
+  stat_ellipse(aes(linetype = Diet, colour = Diet), size = 0.3) # level = 0.95
+
+pca_fungi
+
+# ggsave("Fungi_ordination.png", dpi = 300, width = 6, height = 4)
+
+# Calculate aitchison distance
+dist_fungi <- huhu_f %>%
+  dist_calc("aitchison")
+
+# Permanova
+perm_fungi <- dist_fungi %>%
+  dist_permanova(
+    seed = 57, 
+    n_perms = 999, 
+    variables = "Diet")
+
+# Inspect the results
+perm_get(perm_fungi) %>% as.data.frame()
+
+
+
+## Alpha diversity
+
+min_lib <- min(sample_sums(huhu_f)) 
+
+# Initialize matrices to store richness and evenness estimates
+nsamp = nsamples(huhu_f)  
+trials = 100
+
+richness <- matrix(nrow = nsamp, ncol = trials)
+row.names(richness) <- sample_names(huhu_f)
+
+
+# It is always important to set a seed when you subsample so your result is replicable 
+set.seed(3)
+
+for (i in 1:100) {
+  # Subsample
+  r <- rarefy_even_depth(huhu_f, sample.size = min_lib, verbose = FALSE, replace = TRUE)
+  
+  # Calculate richness
+  rich <- as.numeric(as.matrix(estimate_richness(r, measures = "Observed")))
+  richness[ ,i] <- rich
+  
+}
+
+# Create a new dataframe to hold the means and standard deviations of richness estimates
+SampleID <- row.names(richness)
+mean <- apply(richness, 1, mean)
+sd <- apply(richness, 1, sd)
+measure <- rep("Richness", nsamp)
+rich_stats <- data.frame(SampleID, mean, sd, measure)
+
+s <- data.frame(sample_data(huhu_f)) %>%
+  rownames_to_column("SampleID")
+
+alphadiv_huhu_f <- merge(rich_stats, s, by = "SampleID") 
+
+
+#Plot
+
+plot_rich_huhu_f <- ggplot(alphadiv_huhu_f, aes(x = Diet, y = mean, color = Diet)) +
+  geom_boxplot()+
+  geom_point() +
+  scale_color_manual(values=c("#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3")) +
+  theme_bw() +
+  theme(
+    axis.title.x = element_blank()) +
+  labs(y = "Number of observed",
+       tag = "B")
+
+alpha_f <- plot_rich_huhu_f + stat_compare_means(method = "kruskal.test")
+
+```
+
+### BACTERIA
+
+```{r Bacteria figures}
+
+# Barplots - individuals separated
+
+# Cotton samples
+cotton_samples_bac <- c("38C_Bac", "38P_Bac", "37C_Bac", "37P_Bac",
+                          "06C_Bac", "06P_Bac", "01C_Bac", "01P_Bac")
+# Pine samples
+pine_samples_bac <- c("42P_Bac", "42C_Bac", "41P_Bac", "41C_Bac",
+                      "24P_Bac", "24C_Bac", "20P_Bac", "20C_Bac")
+
+
+# Phylum level
+
+pal_bac_phyla <- huhu_bac %>%
+  tax_fix() %>%
+  tax_palette(rank = "Phylum", n = 30, pal = "brewerPlus")
+
+barplot_phyla_bac_cotton <- huhu_bac %>%
+  subset_samples(Samples %in% cotton_samples_bac) %>%
+  tax_fix() %>% # tax_table values as unknown are replaced with the first known higher taxonomic rank
+  comp_barplot(tax_level = "Phylum", 
+               sample_order = "asis", 
+               bar_width = 0.9,
+               palette = pal_bac_phyla) +
+  coord_flip() +
+  facet_wrap("Diet", nrow = 1, scales = "free") +
+  labs(x = NULL, y = NULL,
+       title = "A",
+      fill = "Highest taxa") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+
+barplot_phyla_bac_pine <- huhu_bac %>%
+  subset_samples(Samples %in% pine_samples_bac) %>%
+  tax_fix() %>% # tax_table values as unknown are replaced with the first known higher taxonomic rank
+  comp_barplot(tax_level = "Phylum", 
+               sample_order = "asis", 
+               bar_width = 0.9,
+               palette = pal_bac_phyla) +
+  coord_flip() +
+  facet_wrap("Diet", nrow = 1, scales = "free") +
+  labs(x = NULL, y = NULL,
+       title = "C",
+       fill = "Highest taxa") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+# Genus level
+
+pal_bac <- huhu_bac %>%
+  tax_fix() %>%
+  tax_palette(rank = "Genus", n = 30, pal = "brewerPlus")
+
+# tax_palette_plot(pal_bac)
+
+barplot_genus_bac_cotton <- huhu_bac %>%
+  subset_samples(Samples %in% cotton_samples_bac) %>%
+  tax_fix() %>%
+  comp_barplot(tax_level = "Genus",
+               n_taxa = 12,
+               merge_other = FALSE,
+               sample_order = "asis",
+               bar_width = 0.9,
+               palette = pal_bac) +
+  coord_flip() +
+  facet_wrap("Diet", nrow = 1, scales = "free") +
+  labs(x = NULL, y = NULL, 
+       title = "B",
+       fill = "Lowest taxa") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+
+barplot_genus_bac_pine <- huhu_bac %>%
+  subset_samples(Samples %in% pine_samples_bac) %>%
+  tax_fix() %>%
+  comp_barplot(tax_level = "Genus",
+               n_taxa = 12,
+               merge_other = FALSE,
+               sample_order = "asis",
+               bar_width = 0.9,
+               palette = pal_bac) +
+  coord_flip() +
+  facet_wrap("Diet", nrow = 1, scales = "free") +
+  labs(x = NULL, y = NULL, 
+       title = "D",
+       fill = "Lowest taxa") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+# Plot
+(barplot_phyla_bac_cotton + barplot_genus_bac_cotton) / (barplot_phyla_bac_pine  + barplot_genus_bac_pine)
+
+# ggsave("Bac_barplots.png", dpi = 300, width = 15, height = 8)
+
+
+## PCA
+
+# Plot
+pca_bac <- huhu_bac %>%
+  tax_transform("clr") %>% # Transform the microbial data with the centre log ratio transformation
+  ord_calc() %>%           # Perform PCA with the clr-transformed (equivalent to aitchison distance)
+  ord_plot(colour = "Diet", size = 5, alpha = 0.75, auto_caption = 0) +
+  scale_colour_brewer(palette = "Set2") +
+  stat_ellipse(aes(linetype = Diet, colour = Diet), size = 0.3) # level = 0.95
+
+pca_bac
+
+# ggsave("Bac_ordination.png", dpi = 300, width = 6, height = 4)
+
+# Calculate aitchison distance
+dist_bac <- huhu_bac %>%
+  dist_calc("aitchison")
+
+# Permanova
+perm_bac <- dist_bac %>%
+  dist_permanova(
+    seed = 57, 
+    n_perms = 999, 
+    variables = "Diet")
+
+# Inspect the results
+perm_get(perm_bac) %>% as.data.frame()
+
+
+## Alpha diversity
+
+min_lib <- min(sample_sums(huhu_bac)) 
+
+# Initialize matrices to store richness and evenness estimates
+nsamp = nsamples(huhu_bac)  
+trials = 100
+
+richness <- matrix(nrow = nsamp, ncol = trials)
+row.names(richness) <- sample_names(huhu_bac)
+
+
+# It is always important to set a seed when you subsample so your result is replicable 
+set.seed(3)
+
+for (i in 1:100) {
+  # Subsample
+  r <- rarefy_even_depth(huhu_bac, sample.size = min_lib, verbose = FALSE, replace = TRUE)
+  
+  # Calculate richness
+  rich <- as.numeric(as.matrix(estimate_richness(r, measures = "Observed")))
+  richness[ ,i] <- rich
+  
+}
+
+# Create a new dataframe to hold the means and standard deviations of richness estimates
+SampleID <- row.names(richness)
+mean <- apply(richness, 1, mean)
+sd <- apply(richness, 1, sd)
+measure <- rep("Richness", nsamp)
+rich_stats <- data.frame(SampleID, mean, sd, measure)
+
+
+s <- data.frame(sample_data(huhu_bac)) %>%
+  rownames_to_column("SampleID")
+
+alphadiv_huhu_bac <- merge(rich_stats, s, by = "SampleID") 
+
+
+#Plot
+
+plot_rich_huhu_bac <- ggplot(alphadiv_huhu_bac, aes(x = Diet, y = mean, color = Diet)) +
+  geom_boxplot()+
+  geom_point() +
+  scale_color_manual(values=c("#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3")) +
+  theme_bw() +
+  theme(
+    axis.title.x = element_blank()) +
+  labs(y = "Number of observed",
+       tag = "A")
+
+alpha_b <- plot_rich_huhu_bac + stat_compare_means(method = "kruskal.test")
+
+
+alpha_total <- alpha_b + alpha_f
+
+#ggsave("Alpha_div.png", dpi = 300, width = 12, height = 4)
+
+alpha_total
+
+```
+
+
+### INTERACTIVE
+
+```{r Fungi interactive, fig.width = 12, fig.height = 16}
+
+huhu_f_i <- transform_sample_counts(huhu_f, function(x) x / sum(x) ) # transform to rel abundance
+
+TopFung <- names(sort(taxa_sums(huhu_f_i), TRUE)[1:50]) # get the to abundant 50 ASVs
+
+huhu_f_i_top <- prune_taxa(TopFung, huhu_f_i) # create a phyloseq object with selected taxa
+
+huhu_f_melt <- psmelt(huhu_f_i_top) # melt for plotting
+
+#Plot
+huhu_f_melt %>%  
+  group_by(Genus) %>%
+  arrange(Samples) %>%
+  plot_ly(
+    x = ~Samples,
+    y = ~Abundance,
+    color = ~Genus,
+    type = "bar") %>%
+  layout(barmode = "stack")
+    
+```
+
+
+```{r Bacteria interactive, fig.width = 12, fig.height = 16}
+
+huhu_bac_i <- transform_sample_counts(huhu_bac, function(x) x / sum(x) ) # transform to rel abundance
+
+TopBac <- names(sort(taxa_sums(huhu_bac_i), TRUE)[1:50]) # get the to abundant 50 ASVs
+
+huhu_bac_i_top <- prune_taxa(TopBac, huhu_bac_i) # create a phyloseq object with selected taxa
+
+huhu_bac_melt <- psmelt(huhu_bac_i_top) # melt for plotting
+
+
+#Plot
+huhu_bac_melt %>% 
+  group_by(Genus) %>%
+  arrange(Samples) %>%
+  plot_ly(
+    x = ~Samples,
+    y = ~Abundance,
+    color = ~Genus,
+    type = "bar") %>%
+  layout(barmode = "stack")
+    
+```
+
